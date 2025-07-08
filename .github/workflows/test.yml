@@ -1,0 +1,73 @@
+name: Test
+on:
+  pull_request:
+    branches: [main]
+env:
+  CODEARTIFACT_DOMAIN: kaito-codeartifact-domain
+  CODEARTIFACT_REPO_NAME: kaito-private-pypi
+  AWS_ACCOUNT: 644151729251
+
+jobs:
+  test:
+    name: Run Python Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+      #----------------------------------------------
+      #        install & configure poetry
+      #----------------------------------------------
+      - name: Install and configure Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      #----------------------------------------------
+      #       load cached venv if cache exists
+      #----------------------------------------------
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v3
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+      - name: assume saml role
+        uses: saml-to/assume-aws-role-action@v1
+        id: assume-role
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          provider: aws
+          role: arn:aws:iam::644151729251:role/dev-uswest2-CodeArtifactS-SamlProviderRoleBCA77D1C-1J9P58OVDSX45
+          region: us-west-2
+      - name: export CODEARTIFACT_TOKEN
+        run: echo "CODEARTIFACT_TOKEN=$(aws codeartifact get-authorization-token --domain $CODEARTIFACT_DOMAIN --query authorizationToken --output text --duration-seconds 3600)" >> $GITHUB_ENV
+      #-------------------------------------------------------------------
+      #       modify sources' url in poetry.lock and pyproject.toml
+      #-------------------------------------------------------------------
+      - name: modify poetry.lock and pyproject.toml
+        run: |
+          sed -i "s/https:\/\/aws:[^\"]*/https:\/\/aws:$CODEARTIFACT_TOKEN@$CODEARTIFACT_DOMAIN-$AWS_ACCOUNT.d.codeartifact.$AWS_DEFAULT_REGION.amazonaws.com\/pypi\/$CODEARTIFACT_REPO_NAME\/simple/g" poetry.lock
+          sed -i "s/https:\/\/aws:[^\"]*/https:\/\/aws:$CODEARTIFACT_TOKEN@$CODEARTIFACT_DOMAIN-$AWS_ACCOUNT.d.codeartifact.$AWS_DEFAULT_REGION.amazonaws.com\/pypi\/$CODEARTIFACT_REPO_NAME\/simple/g" pyproject.toml
+      #----------------------------------------------
+      # install dependencies if cache does not exist
+      #----------------------------------------------
+      - name: Install dependencies
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+      - name: Test with pytest
+        run: |
+          source .venv/bin/activate
+          pytest --junitxml=pytest.xml --cov-report=term-missing:skip-covered --cov --cov-config=.coveragerc tests/ | tee pytest-coverage.txt
+      #-------------------------------------------------------
+      # extract the coverage report to comment at pull request
+      #-------------------------------------------------------
+      - name: Pytest coverage comment
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-coverage-path: ./pytest-coverage.txt
+          junitxml-path: ./pytest.xml
