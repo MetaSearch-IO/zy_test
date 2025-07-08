@@ -1,0 +1,42 @@
+name: release
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+env:
+  CODEARTIFACT_DOMAIN: kaito-codeartifact-domain
+  CODEARTIFACT_REPO_NAME: kaito-private-pypi
+  POETRY_REPO_NAME: artifact-pub
+
+jobs:
+  build-n-publish:
+    name: Build and publish to AWS CodeArtifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install and configure Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.2.2
+          virtualenvs-create: true
+          installer-parallel: true
+      - name: setup poetry virtualenv
+        run: poetry env use 3.11
+      - name: assume saml role
+        uses: saml-to/assume-aws-role-action@v1
+        id: assume-role
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          provider: aws
+          role: arn:aws:iam::644151729251:role/dev-uswest2-CodeArtifactS-SamlProviderRoleBCA77D1C-1J9P58OVDSX45
+          region: us-west-2
+      - name: export CODEARTIFACT_TOKEN
+        run: echo "CODEARTIFACT_TOKEN=$(aws codeartifact get-authorization-token --domain $CODEARTIFACT_DOMAIN --query authorizationToken --output text --duration-seconds 3600)" >> $GITHUB_ENV
+      - name: upload to private repo
+        run: poetry publish --build -r $POETRY_REPO_NAME -u aws -p ${{ env.CODEARTIFACT_TOKEN }}
